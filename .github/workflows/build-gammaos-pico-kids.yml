@@ -113,6 +113,34 @@ jobs:
       # IMPORTANT: The upstream make_sdcard.sh hides emulator compiler errors with
       # "./build.sh >/dev/null 2>&1" and continues if a core fails. Build cores
       # individually first, with real logs, and reject incomplete packages.
+      # gpSP's linker aligns load_size to 16 bytes, but objcopy can omit the
+      # last zero-filled bytes. Its own build.sh refuses such a short blob.
+      # Make ONLY this bounded zero-padding correction; keep all validations.
+      - name: Fix gpSP four-byte blob alignment mismatch safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFIX'
+          from pathlib import Path
+          path = Path("lk-mt6785/cores/gpsp-pico/build.sh")
+          script = path.read_text()
+          old = 'assert load == len(d), "load size %d != file %d" % (load, len(d))'
+          new = '''if load != len(d):
+              missing = load - len(d)
+              if not (0 < missing < 16 and load % 16 == 0 and span >= load and load <= 4 * 1024 * 1024):
+                  raise AssertionError("Unexpected gpSP blob size: load %d, file %d" % (load, len(d)))
+              with open(sys.argv[1], "ab") as f:
+                  f.write(bytes(missing))
+              d += bytes(missing)
+              print("Added %d zero bytes for gpSP 16-byte alignment" % missing)
+          assert load == len(d), "load size %d != file %d" % (load, len(d))'''
+          if script.count(old) != 1:
+              raise SystemExit("Cannot locate the exact gpSP size check; upstream changed, refusing to modify")
+          path.write_text(script.replace(old, new))
+          print("Patched gpSP build validation with bounded zero-padding; other checks remain in place")
+          PYFIX
+          bash -n lk-mt6785/cores/gpsp-pico/build.sh
+
       - name: Build all six emulator cores with visible diagnostics
         shell: bash
         run: |
