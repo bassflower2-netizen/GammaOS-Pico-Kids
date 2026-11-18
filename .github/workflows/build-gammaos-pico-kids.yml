@@ -9,10 +9,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
-      - name: Checkout kids patch repository
+      - name: Checkout Kids patch repository
         uses: actions/checkout@v5
 
       - name: Install Linux build dependencies
@@ -21,43 +21,58 @@ jobs:
           sudo apt-get install -y git make unzip zip python3 python3-pil python3-numpy \
             openssl gcc-arm-none-eabi libnewlib-arm-none-eabi
 
-      # Clone and submodule update are separated to identify an exit-128 failure.
       - name: Fetch official GammaOS Pico source code
         run: |
           git clone --single-branch --branch lk-gba-emu-sd-card-kpa \
             https://github.com/TheGammaSqueeze/lk-mt6785.git lk-mt6785
-          git -C lk-mt6785 rev-parse --short HEAD
+          git -C lk-mt6785 rev-parse HEAD | tee gammaos-source-commit.txt
 
-      # The LK repository pins a Genesis Plus GX commit (7016c807...) that its
-      # public upstream no longer serves. Keep all other pinned core versions.
-      # For Genesis only, use the current main branch and preserve its own
-      # pinned nested upstream dependencies. This is a compatibility workaround
-      # and requires testing; it does not restore the original missing commit.
-      - name: Fetch emulator submodules (work around unavailable Genesis commit)
+      # Prefer every exact gitlink commit. Only when that commit is not fetchable,
+      # use the remote's default branch HEAD for that particular module. Handles
+      # ALL top-level cores and their NESTED upstream dependencies.
+      # Fallback versions are different from the original pinned ones; this
+      # deliberately creates an UNTESTED build and MUST NOT be flashed as-is.
+      - name: Fetch submodules (automatic fallback for unavailable commits)
+        shell: bash
         run: |
           set -euo pipefail
-          git -C lk-mt6785 submodule sync
-          for core in \
-            cores/armGBA-pico \
-            cores/armNES-pico \
-            cores/gambatte-pico \
-            cores/gpsp-pico \
-            cores/snes9x-pico; do
-            echo "::group::Fetching pinned $core"
-            git -C lk-mt6785 submodule update --init --recursive -- "$core"
-            echo "::endgroup::"
-          done
-          echo "::group::Fetching Genesis Plus GX at available main branch"
-          git -C lk-mt6785 config submodule.cores/genesis-plus-gx-pico.branch main
-          git -C lk-mt6785 submodule update --init --remote -- cores/genesis-plus-gx-pico
-          git -C lk-mt6785/cores/genesis-plus-gx-pico submodule sync --recursive
-          git -C lk-mt6785/cores/genesis-plus-gx-pico submodule update --init --recursive
-          echo "Genesis Plus GX selected commit:"
-          git -C lk-mt6785/cores/genesis-plus-gx-pico rev-parse HEAD
-          echo "LK originally pinned:"
-          git -C lk-mt6785 ls-tree HEAD cores/genesis-plus-gx-pico
-          echo "::endgroup::"
-          git -C lk-mt6785 submodule status
+          : > fallback-submodules.txt
+
+          load_modules() {
+            local parent="$1"
+            local key subpath pinned actual
+            if [[ ! -f "$parent/.gitmodules" ]]; then
+              return 0
+            fi
+
+            git -C "$parent" submodule sync
+            while read -r key subpath; do
+              [[ -n "$subpath" ]] || continue
+              echo "::group::Fetching $parent/$subpath"
+              pinned="$(git -C "$parent" ls-tree HEAD -- "$subpath" | awk '{print $3}')"
+
+              if git -C "$parent" submodule update --init -- "$subpath"; then
+                echo "Exact pinned commit available: $pinned"
+              else
+                echo "::warning title=Unavailable submodule commit::${parent}/${subpath}: pinned ${pinned} is not fetchable. Using remote default branch HEAD instead."
+                git -C "$parent" submodule update --init --remote -- "$subpath"
+                actual="$(git -C "$parent/$subpath" rev-parse HEAD)"
+                echo "${parent}/${subpath} | PINNED=${pinned} | FALLBACK=${actual}" | tee -a fallback-submodules.txt
+              fi
+
+              test -f "$parent/$subpath/build.sh" || test -f "$parent/$subpath/.gitmodules" || test -d "$parent/$subpath/.git" || test -f "$parent/$subpath/.git"
+              echo "Selected: $(git -C "$parent/$subpath" rev-parse HEAD)"
+              load_modules "$parent/$subpath"
+              echo "::endgroup::"
+            done < <(git config -f "$parent/.gitmodules" --get-regexp '^submodule\..*\.path$')
+          }
+
+          load_modules lk-mt6785
+          git -C lk-mt6785 submodule status --recursive | tee submodule-versions.txt
+          if [[ -s fallback-submodules.txt ]]; then
+            echo "::warning title=Compatibility testing required::One or more upstream commit IDs were unavailable. Exact substitutes are listed in fallback-submodules.txt."
+            cat fallback-submodules.txt
+          fi
 
       - name: Verify and apply Kids restrictions
         run: |
@@ -67,17 +82,28 @@ jobs:
       - name: Compile Konkr Pocket Advance firmware and SD contents
         working-directory: lk-mt6785
         run: |
+          set -euo pipefail
           chmod +x build_konkr_kpa.sh
           ./build_konkr_kpa.sh
           test -s out/lk_a_kpa_signed.img
-          test -f out/sdcard/gammaos/boot.cfg
+          test -s out/sdcard/gammaos/boot.cfg
+          test -s out/sdcard/gammaos/menu.pack
+          for core in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico armnes-pico; do
+            test -s "out/sdcard/cores/$core.blob" || {
+              echo "::error::Missing emulator core: $core.blob. Do not use this build."
+              exit 1
+            }
+          done
 
-      - name: Package experimental build
+      - name: Package experimental build (do not flash without review)
         run: |
+          set -euo pipefail
           mkdir -p kids-output
           cp lk-mt6785/out/lk_a_kpa_signed.img kids-output/
           cp -a lk-mt6785/out/sdcard kids-output/
           cp README_DE.md kids-output/
+          cp gammaos-source-commit.txt submodule-versions.txt fallback-submodules.txt kids-output/
+          echo "EXPERIMENTAL: NOT DEVICE-TESTED. Validate image and recovery procedure before flashing." > kids-output/UNTESTED_READ_FIRST.txt
           cd kids-output
           zip -qr ../GammaOS-Pico-Kids-KPA-UNTESTED.zip .
 
