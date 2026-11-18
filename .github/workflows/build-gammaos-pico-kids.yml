@@ -94,7 +94,7 @@ jobs:
 
       - name: Verify and apply Kids restrictions
         run: |
-                  python3 apply_kids_patch.py lk-mt6785 --check
+          python3 apply_kids_patch.py lk-mt6785 --check
           python3 apply_kids_patch.py lk-mt6785
 
       - name: Check prebuilt logo compressor dependencies
