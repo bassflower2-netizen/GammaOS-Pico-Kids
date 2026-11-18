@@ -1,3 +1,9 @@
+zlib1g:amd64 libc6:i386 zlib1g:i386
+
+      - name: Fetch official GammaOS Pico source code
+        run: |
+          git clone --single-branch --branch lk-gba-emu-sd-card-kpa \
+            https://github.com/TheGammaSqueeze/lk-mt6785.git lk-mt6785
           git -C lk-mt6785 rev-parse HEAD | tee gammaos-source-commit.txt
 
       # Prefer every exact gitlink commit. Only when that commit is not fetchable,
