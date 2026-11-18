@@ -141,11 +141,13 @@ jobs:
           PYFIX
           bash -n lk-mt6785/cores/gpsp-pico/build.sh
 
-      # GCC 13/libstdc++ has limited freestanding C++ header support.
-      # Gambatte uses libstdc++ headers such as <string>, which fail when
-      # __STDC_HOSTED__ is 0. Keep the bare-metal target, C flags, and
-      # no-builtin behavior; change only the C++ compilation mode.
-      - name: Fix Gambatte GCC 13 C++ freestanding incompatibility
+      # Older ARM toolchain/newlib C++ headers fail in freestanding mode.
+      # Upstream Gambatte's gbint.h only includes <stdint.h> when
+      # HAVE_STDINT_H is defined. Without it, gambatte.h's uint16_t alias
+      # and video_pixel_t fail, producing many cascading errors in ppu.h.
+      # Apply both fixes to Gambatte's C++ flags only. Do not edit the
+      # libretro upstream sources or change firmware compiler settings.
+      - name: Fix Gambatte C++ headers and missing video pixel type
         shell: bash
         run: |
           set -euo pipefail
@@ -154,16 +156,19 @@ jobs:
           path = Path("lk-mt6785/cores/gambatte-pico/build.sh")
           script = path.read_text()
           old = 'CXXFLAGS="$ARCH -fno-exceptions'
-          new = 'CXXFLAGS="${ARCH/ -ffreestanding/} -fno-builtin -fno-exceptions'
+          new = 'CXXFLAGS="${ARCH/ -ffreestanding/} -fno-builtin -DHAVE_STDINT_H -fno-exceptions'
           if script.count(old) != 1:
               raise SystemExit("Gambatte CXXFLAGS have changed; refusing automatic modification")
           if script.count('-ffreestanding') != 1:
               raise SystemExit("Unexpected Gambatte freestanding configuration; refusing automatic modification")
+          gbint = Path("lk-mt6785/cores/gambatte-pico/upstream/libgambatte/include/gbint.h")
+          if not gbint.exists() or "HAVE_STDINT_H" not in gbint.read_text():
+              raise SystemExit("Upstream Gambatte's gbint.h differs; refusing to apply an unverified fix")
           path.write_text(script.replace(old, new, 1))
-          print("Gambatte: removed -ffreestanding for C++ only and retained -fno-builtin; C remains freestanding.")
+          print("Gambatte: using hosted C++ headers, -DHAVE_STDINT_H, and -fno-builtin; C remains freestanding.")
           PYFIX
           bash -n lk-mt6785/cores/gambatte-pico/build.sh
-          grep -F 'CXXFLAGS="${ARCH/ -ffreestanding/} -fno-builtin -fno-exceptions' lk-mt6785/cores/gambatte-pico/build.sh
+          grep -F 'CXXFLAGS="${ARCH/ -ffreestanding/} -fno-builtin -DHAVE_STDINT_H -fno-exceptions' lk-mt6785/cores/gambatte-pico/build.sh
 
       - name: Build all six emulator cores with visible diagnostics
         shell: bash
@@ -188,7 +193,11 @@ jobs:
               exit 1
             fi
             if ! (cd "$repo" && ./build.sh) > "$log" 2>&1; then
-              echo "::error title=Emulator build failed::$core failed. Last 120 log lines:"
+              echo "::error title=Emulator build failed::$core failed. First compiler errors:"
+              grep -n -m 12 -E '(^|[ :])(fatal error:|error:|AssertionError:)' "$log" || true
+              echo "First 70 log lines:"
+              head -n 70 "$log"
+              echo "Last 120 log lines:"
               tail -n 120 "$log"
               echo "::endgroup::"
               exit 1
