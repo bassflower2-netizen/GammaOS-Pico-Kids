@@ -29,8 +29,15 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y git make unzip zip file python3 python3-pil python3-numpy \
+            python3-cairosvg python3-fonttools python3-arabic-reshaper \
             openssl gcc-arm-none-eabi libnewlib-arm-none-eabi \
             zlib1g:amd64 libc6:i386 zlib1g:i386
+
+      - name: Verify Python dependencies for SD-card generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c 'import cairosvg, fontTools, arabic_reshaper, numpy, PIL; print("OK: CairoSVG, fontTools, arabic_reshaper, NumPy, Pillow")'
 
       - name: Fetch official GammaOS Pico source code
         run: |
@@ -87,14 +94,14 @@ jobs:
 
       - name: Verify and apply Kids restrictions
         run: |
-          python3 apply_kids_patch.py lk-mt6785 --check
+                  python3 apply_kids_patch.py lk-mt6785 --check
           python3 apply_kids_patch.py lk-mt6785
 
       - name: Check prebuilt logo compressor dependencies
         shell: bash
         run: |
           set -euo pipefail
-            TOOL="lk-mt6785/dev/logo/tool/zpipe"
+          TOOL="lk-mt6785/dev/logo/tool/zpipe"
           test -x "$TOOL"
           echo "Binary architecture:"
           file "$TOOL"
@@ -109,9 +116,12 @@ jobs:
           set -euo pipefail
           chmod +x build_konkr_kpa.sh
           ./build_konkr_kpa.sh
-          test -s out/lk_a_kpa_signed.img
-          test -s out/sdcard/gammaos/boot.cfg
-          test -s out/sdcard/gammaos/menu.pack
+          for required in out/lk_a_kpa_signed.img out/sdcard/gammaos/boot.cfg out/sdcard/gammaos/menu.pack; do
+            if [[ ! -s "$required" ]]; then
+              echo "::error::Missing required build output: $required. SD-card generation did not finish."
+              exit 1
+            fi
+          done
           for core in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico armnes-pico; do
             test -s "out/sdcard/cores/$core.blob" || {
               echo "::error::Missing emulator core: $core.blob. Do not use this build."
