@@ -28,11 +28,36 @@ jobs:
             https://github.com/TheGammaSqueeze/lk-mt6785.git lk-mt6785
           git -C lk-mt6785 rev-parse --short HEAD
 
-      - name: Fetch emulator submodules
+      # The LK repository pins a Genesis Plus GX commit (7016c807...) that its
+      # public upstream no longer serves. Keep all other pinned core versions.
+      # For Genesis only, use the current main branch and preserve its own
+      # pinned nested upstream dependencies. This is a compatibility workaround
+      # and requires testing; it does not restore the original missing commit.
+      - name: Fetch emulator submodules (work around unavailable Genesis commit)
         run: |
-          git -C lk-mt6785 submodule sync --recursive
-          git -C lk-mt6785 submodule update --init --recursive --jobs 2
-          git -C lk-mt6785 submodule status --recursive
+          set -euo pipefail
+          git -C lk-mt6785 submodule sync
+          for core in \
+            cores/armGBA-pico \
+            cores/armNES-pico \
+            cores/gambatte-pico \
+            cores/gpsp-pico \
+            cores/snes9x-pico; do
+            echo "::group::Fetching pinned $core"
+            git -C lk-mt6785 submodule update --init --recursive -- "$core"
+            echo "::endgroup::"
+          done
+          echo "::group::Fetching Genesis Plus GX at available main branch"
+          git -C lk-mt6785 config submodule.cores/genesis-plus-gx-pico.branch main
+          git -C lk-mt6785 submodule update --init --remote -- cores/genesis-plus-gx-pico
+          git -C lk-mt6785/cores/genesis-plus-gx-pico submodule sync --recursive
+          git -C lk-mt6785/cores/genesis-plus-gx-pico submodule update --init --recursive
+          echo "Genesis Plus GX selected commit:"
+          git -C lk-mt6785/cores/genesis-plus-gx-pico rev-parse HEAD
+          echo "LK originally pinned:"
+          git -C lk-mt6785 ls-tree HEAD cores/genesis-plus-gx-pico
+          echo "::endgroup::"
+          git -C lk-mt6785 submodule status
 
       - name: Verify and apply Kids restrictions
         run: |
