@@ -110,6 +110,48 @@ jobs:
           ! grep -q 'not found' /tmp/gammaos-zpipe-ldd.txt
           echo "OK: all required zpipe libraries are available."
 
+      # IMPORTANT: The upstream make_sdcard.sh hides emulator compiler errors with
+      # "./build.sh >/dev/null 2>&1" and continues if a core fails. Build cores
+      # individually first, with real logs, and reject incomplete packages.
+      - name: Build all six emulator cores with visible diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kids-diagnostics
+          for spec in \
+            'armGBA-pico:armgba-pico' \
+            'gpsp-pico:gpsp-pico' \
+            'gambatte-pico:gambatte-pico' \
+            'snes9x-pico:snes9x-pico' \
+            'genesis-plus-gx-pico:genesis-plus-gx-pico' \
+            'armNES-pico:armnes-pico'; do
+            dir="${spec%%:*}"
+            core="${spec#*:}"
+            repo="lk-mt6785/cores/$dir"
+            log="kids-diagnostics/$core.log"
+            echo "::group::Building $core"
+            if [[ ! -x "$repo/build.sh" ]]; then
+              echo "::error title=Missing build script::$repo/build.sh is missing or not executable"
+              echo "::endgroup::"
+              exit 1
+            fi
+            if ! (cd "$repo" && ./build.sh) > "$log" 2>&1; then
+              echo "::error title=Emulator build failed::$core failed. Last 120 log lines:"
+              tail -n 120 "$log"
+              echo "::endgroup::"
+              exit 1
+            fi
+            if [[ ! -s "$repo/out/$core.blob" ]]; then
+              echo "::error title=Core blob missing::$core build returned success but did not create out/$core.blob"
+              tail -n 120 "$log"
+              echo "::endgroup::"
+              exit 1
+            fi
+            echo "OK: $core ($(stat -c '%s' "$repo/out/$core.blob") bytes)"
+            tail -n 8 "$log"
+            echo "::endgroup::"
+          done
+
       - name: Compile Konkr Pocket Advance firmware and SD contents
         working-directory: lk-mt6785
         run: |
@@ -147,5 +189,19 @@ jobs:
           name: GammaOS-Pico-Kids-KPA-UNTESTED
           path: GammaOS-Pico-Kids-KPA-UNTESTED.zip
           if-no-files-found: error
+
+
+      # Still available when a core fails and no firmware ZIP was produced.
+      - name: Upload diagnostic logs when the build fails
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: GammaOS-Pico-Kids-Build-Logs
+          path: |
+            kids-diagnostics/
+            gammaos-source-commit.txt
+            fallback-submodules.txt
+            submodule-versions.txt
+          if-no-files-found: ignore
 
 # EOF: Ende der Workflow-Datei.
