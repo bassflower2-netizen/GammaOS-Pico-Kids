@@ -1,0 +1,55 @@
+name: GammaOS Pico Kids - build (experimental)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout kids patch repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git make unzip zip python3 python3-pil python3-numpy \
+            openssl gcc-arm-none-eabi libnewlib-arm-none-eabi
+
+      - name: Fetch official GammaOS Pico sources
+        run: |
+          git clone --recursive --single-branch -b lk-gba-emu-sd-card-kpa \
+            https://github.com/TheGammaSqueeze/lk-mt6785.git lk-mt6785
+
+      - name: Verify and apply Kids restrictions
+        run: |
+          python3 apply_kids_patch.py lk-mt6785 --check
+          python3 apply_kids_patch.py lk-mt6785
+
+      - name: Compile Konkr Pocket Advance firmware + SD contents
+        working-directory: lk-mt6785
+        run: |
+          chmod +x build_konkr_kpa.sh
+          ./build_konkr_kpa.sh
+          test -s out/lk_a_kpa_signed.img
+          test -f out/sdcard/gammaos/boot.cfg
+
+      - name: Package experimental build
+        run: |
+          mkdir -p kids-output
+          cp lk-mt6785/out/lk_a_kpa_signed.img kids-output/
+          cp -a lk-mt6785/out/sdcard kids-output/
+          cp README_DE.md kids-output/
+          cd kids-output && zip -qr ../GammaOS-Pico-Kids-KPA-UNTESTED.zip .
+
+      - name: Upload build artifact (NOT device-tested)
+        uses: actions/upload-artifact@v4
+        with:
+          name: GammaOS-Pico-Kids-KPA-UNTESTED
+          path: GammaOS-Pico-Kids-KPA-UNTESTED.zip
+          if-no-files-found: error
