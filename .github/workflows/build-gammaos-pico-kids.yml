@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout kids patch repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Linux build dependencies
         run: |
@@ -21,17 +21,25 @@ jobs:
           sudo apt-get install -y git make unzip zip python3 python3-pil python3-numpy \
             openssl gcc-arm-none-eabi libnewlib-arm-none-eabi
 
-      - name: Fetch official GammaOS Pico sources
+      # Clone and submodule update are separated to identify an exit-128 failure.
+      - name: Fetch official GammaOS Pico source code
         run: |
-          git clone --recursive --single-branch -b lk-gba-emu-sd-card-kpa \
+          git clone --single-branch --branch lk-gba-emu-sd-card-kpa \
             https://github.com/TheGammaSqueeze/lk-mt6785.git lk-mt6785
+          git -C lk-mt6785 rev-parse --short HEAD
+
+      - name: Fetch emulator submodules
+        run: |
+          git -C lk-mt6785 submodule sync --recursive
+          git -C lk-mt6785 submodule update --init --recursive --jobs 2
+          git -C lk-mt6785 submodule status --recursive
 
       - name: Verify and apply Kids restrictions
         run: |
           python3 apply_kids_patch.py lk-mt6785 --check
           python3 apply_kids_patch.py lk-mt6785
 
-      - name: Compile Konkr Pocket Advance firmware + SD contents
+      - name: Compile Konkr Pocket Advance firmware and SD contents
         working-directory: lk-mt6785
         run: |
           chmod +x build_konkr_kpa.sh
@@ -45,10 +53,11 @@ jobs:
           cp lk-mt6785/out/lk_a_kpa_signed.img kids-output/
           cp -a lk-mt6785/out/sdcard kids-output/
           cp README_DE.md kids-output/
-          cd kids-output && zip -qr ../GammaOS-Pico-Kids-KPA-UNTESTED.zip .
+          cd kids-output
+          zip -qr ../GammaOS-Pico-Kids-KPA-UNTESTED.zip .
 
       - name: Upload build artifact (NOT device-tested)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: GammaOS-Pico-Kids-KPA-UNTESTED
           path: GammaOS-Pico-Kids-KPA-UNTESTED.zip
