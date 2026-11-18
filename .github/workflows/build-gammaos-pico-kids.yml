@@ -85,12 +85,12 @@ jobs:
           python3 apply_kids_patch.py lk-mt6785
 
       - name: Check prebuilt logo compressor dependencies
+        shell: bash
         run: |
           set -euo pipefail
-          TOOL=lk-mt6785/dev/logo/tool/zpipe
+          TOOL="lk-mt6785/dev/logo/tool/zpipe"
           test -x "$TOOL"
           echo "Binary architecture:"
           file "$TOOL"
           echo "Shared library dependencies:"
           ldd "$TOOL" | tee /tmp/gammaos-zpipe-ldd.txt
-          if grep -q 'not found' /tmp/gammaos-zpipe-ldd.txt; then
