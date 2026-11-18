@@ -141,6 +141,30 @@ jobs:
           PYFIX
           bash -n lk-mt6785/cores/gpsp-pico/build.sh
 
+      # GCC 13/libstdc++ has limited freestanding C++ header support.
+      # Gambatte uses libstdc++ headers such as <string>, which fail when
+      # __STDC_HOSTED__ is 0. Keep the bare-metal target, C flags, and
+      # no-builtin behavior; change only the C++ compilation mode.
+      - name: Fix Gambatte GCC 13 C++ freestanding incompatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFIX'
+          from pathlib import Path
+          path = Path("lk-mt6785/cores/gambatte-pico/build.sh")
+          script = path.read_text()
+          old = 'CXXFLAGS="$ARCH -fno-exceptions'
+          new = 'CXXFLAGS="${ARCH/ -ffreestanding/} -fno-builtin -fno-exceptions'
+          if script.count(old) != 1:
+              raise SystemExit("Gambatte CXXFLAGS have changed; refusing automatic modification")
+          if script.count('-ffreestanding') != 1:
+              raise SystemExit("Unexpected Gambatte freestanding configuration; refusing automatic modification")
+          path.write_text(script.replace(old, new, 1))
+          print("Gambatte: removed -ffreestanding for C++ only and retained -fno-builtin; C remains freestanding.")
+          PYFIX
+          bash -n lk-mt6785/cores/gambatte-pico/build.sh
+          grep -F 'CXXFLAGS="${ARCH/ -ffreestanding/} -fno-builtin -fno-exceptions' lk-mt6785/cores/gambatte-pico/build.sh
+
       - name: Build all six emulator cores with visible diagnostics
         shell: bash
         run: |
