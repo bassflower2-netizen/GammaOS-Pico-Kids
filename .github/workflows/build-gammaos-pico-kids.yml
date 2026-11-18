@@ -14,14 +14,14 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
 
     steps:
       - name: Checkout Kids patch repository
         uses: actions/checkout@v5
 
-      - name: Install Linux build dependencies and 32-bit zlib runtime
+      - name: Install verified GCC 10.3 build toolchain and SD dependencies
         run: |
           set -euo pipefail
           # The vendor logo tool zpipe needs libz.so.1. On 64-bit runners
@@ -29,9 +29,11 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y git make unzip zip file python3 python3-pil python3-numpy \
-            python3-cairosvg python3-fonttools python3-arabic-reshaper \
-            openssl gcc-arm-none-eabi libnewlib-arm-none-eabi \
-            zlib1g:amd64 libc6:i386 zlib1g:i386
+            python3-cairosvg python3-fonttools \
+            openssl python3-pip gcc-arm-none-eabi libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib zlib1g:amd64 libc6:i386 zlib1g:i386
+          # Not packaged for Jammy; install into the runner-user site packages.
+          python3 -m pip install --user --disable-pip-version-check "arabic-reshaper==3.0.0"
 
       - name: Verify Python dependencies for SD-card generation
         shell: bash
@@ -141,34 +143,47 @@ jobs:
           PYFIX
           bash -n lk-mt6785/cores/gpsp-pico/build.sh
 
-      # Older ARM toolchain/newlib C++ headers fail in freestanding mode.
-      # Upstream Gambatte's gbint.h only includes <stdint.h> when
-      # HAVE_STDINT_H is defined. Without it, gambatte.h's uint16_t alias
-      # and video_pixel_t fail, producing many cascading errors in ppu.h.
-      # Apply both fixes to Gambatte's C++ flags only. Do not edit the
-      # libretro upstream sources or change firmware compiler settings.
-      - name: Fix Gambatte C++ headers and missing video pixel type
+      # Gambatte's upstream README explicitly tested ARM GNU 10.3-2021.07
+      # under Ubuntu 22.04. Unlike GCC 13 + newlib headers, it supports the
+      # original freestanding C++ build flags with no speculative patches.
+      - name: Verify upstream-tested ARM GCC 10.3 and unchanged Gambatte flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          arm-none-eabi-g++ --version | head -n 1
+          ARM_GCC_VERSION="$(arm-none-eabi-g++ -dumpfullversion)"
+          if [[ "$ARM_GCC_VERSION" != 10.3* ]]; then
+            echo "::error title=Unexpected ARM compiler::Expected GCC 10.3.x; found $ARM_GCC_VERSION"
+            exit 1
+          fi
+          grep -F 'ARCH="-march=armv7-a -mfloat-abi=soft -mthumb-interwork -ffreestanding"' lk-mt6785/cores/gambatte-pico/build.sh
+          echo "Using upstream Gambatte build.sh unchanged with GCC $ARM_GCC_VERSION"
+
+      # Gambatte deliberately links no libstdc++ runtime. Its freestanding
+      # pico_runtime.cpp implements the required std::__throw_* error hooks,
+      # but lacks __throw_bad_array_new_length, which the C++ allocator may
+      # reference with the installed toolchain. Supply just that hook, using
+      # Gambatte's existing non-returning error-handler convention.
+      - name: Fix Gambatte missing freestanding C++ array-length handler
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PYFIX'
           from pathlib import Path
-          path = Path("lk-mt6785/cores/gambatte-pico/build.sh")
-          script = path.read_text()
-          old = 'CXXFLAGS="$ARCH -fno-exceptions'
-          new = 'CXXFLAGS="${ARCH/ -ffreestanding/} -fno-builtin -DHAVE_STDINT_H -fno-exceptions'
-          if script.count(old) != 1:
-              raise SystemExit("Gambatte CXXFLAGS have changed; refusing automatic modification")
-          if script.count('-ffreestanding') != 1:
-              raise SystemExit("Unexpected Gambatte freestanding configuration; refusing automatic modification")
-          gbint = Path("lk-mt6785/cores/gambatte-pico/upstream/libgambatte/include/gbint.h")
-          if not gbint.exists() or "HAVE_STDINT_H" not in gbint.read_text():
-              raise SystemExit("Upstream Gambatte's gbint.h differs; refusing to apply an unverified fix")
-          path.write_text(script.replace(old, new, 1))
-          print("Gambatte: using hosted C++ headers, -DHAVE_STDINT_H, and -fno-builtin; C remains freestanding.")
+          path = Path('lk-mt6785/cores/gambatte-pico/pico/pico_runtime.cpp')
+          source = path.read_text(encoding='utf-8')
+          symbol = '__throw_bad_array_new_length'
+          anchor = 'void __throw_bad_alloc()                 { for (;;) {} }'
+          if symbol in source:
+              print('Gambatte runtime already supplies the error handler; no change needed.')
+          else:
+              if source.count(anchor) != 1:
+                  raise SystemExit('Gambatte runtime differs from the verified upstream source; refusing blind modification.')
+              addition = anchor + '\nvoid __throw_bad_array_new_length()     { for (;;) {} }'
+              path.write_text(source.replace(anchor, addition, 1), encoding='utf-8')
+              print('Added std::__throw_bad_array_new_length() to the existing freestanding error handlers.')
           PYFIX
-          bash -n lk-mt6785/cores/gambatte-pico/build.sh
-          grep -F 'CXXFLAGS="${ARCH/ -ffreestanding/} -fno-builtin -DHAVE_STDINT_H -fno-exceptions' lk-mt6785/cores/gambatte-pico/build.sh
+          grep -n -F '__throw_bad_array_new_length()' lk-mt6785/cores/gambatte-pico/pico/pico_runtime.cpp
 
       - name: Build all six emulator cores with visible diagnostics
         shell: bash
@@ -240,6 +255,7 @@ jobs:
           cp -a lk-mt6785/out/sdcard kids-output/
           cp README_DE.md kids-output/
           cp gammaos-source-commit.txt submodule-versions.txt fallback-submodules.txt kids-output/
+          arm-none-eabi-g++ --version | head -n 1 > kids-output/toolchain-version.txt
           echo "EXPERIMENTAL: NOT DEVICE-TESTED. Validate image and recovery procedure before flashing." > kids-output/UNTESTED_READ_FIRST.txt
           cd kids-output
           zip -qr ../GammaOS-Pico-Kids-KPA-UNTESTED.zip .
@@ -265,4 +281,6 @@ jobs:
             submodule-versions.txt
           if-no-files-found: ignore
 
-# EOF: Ende der Workflow-Datei.
+# Build uses Ubuntu 22.04 + ARM GCC 10.3, the toolchain tested by gambatte-pico.
+# Missing Gambatte C++ allocator-error handler added to existing freestanding runtime.
+# Firmware remains untested and must not be flashed without independent review.
