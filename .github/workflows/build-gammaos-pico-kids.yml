@@ -1,35 +1,3 @@
-name: GammaOS Pico Kids - build (experimental)
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-
-    steps:
-      - name: Checkout Kids patch repository
-        uses: actions/checkout@v5
-
-      - name: Install Linux build dependencies and 32-bit zlib runtime
-        run: |
-          set -euo pipefail
-          # The vendor logo tool zpipe needs libz.so.1. On 64-bit runners
-          # its legacy x86 (32-bit) runtime is not installed by default.
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y git make unzip zip file python3 python3-pil python3-numpy \
-            openssl gcc-arm-none-eabi libnewlib-arm-none-eabi \
-            zlib1g:amd64 libc6:i386 zlib1g:i386
-
-      - name: Fetch official GammaOS Pico source code
-        run: |
-          git clone --single-branch --branch lk-gba-emu-sd-card-kpa \
-            https://github.com/TheGammaSqueeze/lk-mt6785.git lk-mt6785
           git -C lk-mt6785 rev-parse HEAD | tee gammaos-source-commit.txt
 
       # Prefer every exact gitlink commit. Only when that commit is not fetchable,
@@ -94,3 +62,40 @@ jobs:
           file "$TOOL"
           echo "Shared library dependencies:"
           ldd "$TOOL" | tee /tmp/gammaos-zpipe-ldd.txt
+          ! grep -q 'not found' /tmp/gammaos-zpipe-ldd.txt
+          echo "OK: all required zpipe libraries are available."
+
+      - name: Compile Konkr Pocket Advance firmware and SD contents
+        working-directory: lk-mt6785
+        run: |
+          set -euo pipefail
+          chmod +x build_konkr_kpa.sh
+          ./build_konkr_kpa.sh
+          test -s out/lk_a_kpa_signed.img
+          test -s out/sdcard/gammaos/boot.cfg
+          test -s out/sdcard/gammaos/menu.pack
+          for core in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico armnes-pico; do
+            test -s "out/sdcard/cores/$core.blob" || {
+              echo "::error::Missing emulator core: $core.blob. Do not use this build."
+              exit 1
+            }
+          done
+
+      - name: Package experimental build (do not flash without review)
+        run: |
+          set -euo pipefail
+          mkdir -p kids-output
+          cp lk-mt6785/out/lk_a_kpa_signed.img kids-output/
+          cp -a lk-mt6785/out/sdcard kids-output/
+          cp README_DE.md kids-output/
+          cp gammaos-source-commit.txt submodule-versions.txt fallback-submodules.txt kids-output/
+          echo "EXPERIMENTAL: NOT DEVICE-TESTED. Validate image and recovery procedure before flashing." > kids-output/UNTESTED_READ_FIRST.txt
+          cd kids-output
+          zip -qr ../GammaOS-Pico-Kids-KPA-UNTESTED.zip .
+
+      - name: Upload build artifact (NOT device-tested)
+        uses: actions/upload-artifact@v6
+        with:
+          name: GammaOS-Pico-Kids-KPA-UNTESTED
+          path: GammaOS-Pico-Kids-KPA-UNTESTED.zip
+          if-no-files-found: error
