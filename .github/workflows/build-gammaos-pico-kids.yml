@@ -129,6 +129,55 @@ jobs:
           git -C lk-mt6785 submodule status --recursive > submodule-versions.txt
           echo "OK: SNES9x build script and nested upstream sources are available."
 
+      # The source tree pins Genesis Plus GX (and SNES9x) commits that may not
+      # be available from the public remotes. On affected checkouts,
+      # "submodule update --remote" can leave the core directory without
+      # build.sh. Preserve existing complete trees, repair only incomplete
+      # checkouts from the OFFICIAL Pico port, and verify nested sources.
+      # Also guard armNES against the same issue before starting compilation.
+      - name: Verify or repair Genesis Plus GX and armNES checkouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_core() {
+            local name="$1" url="$2" repo="lk-mt6785/cores/$1" actual
+            echo "::group::Checking ${name} checkout"
+            if [[ ! -f "$repo/build.sh" ]]; then
+              echo "::warning title=${name} checkout incomplete::build.sh missing. Cloning official main branch into the core directory."
+              rm -rf -- "$repo"
+              git clone --single-branch --branch main "$url" "$repo"
+              actual="$(git -C "$repo" rev-parse HEAD)"
+              printf '%s | RECONSTRUCTED_MAIN=%s | URL=%s\n' "$repo" "$actual" "$url" >> fallback-submodules.txt
+            else
+              echo "Existing ${name} build.sh found; preserving checkout."
+            fi
+
+            if [[ ! -f "$repo/build.sh" ]]; then
+              echo "::error title=Missing ${name} build script::${repo}/build.sh is not present even after repair."
+              exit 1
+            fi
+            chmod +x "$repo/build.sh"
+            git -C "$repo" submodule sync --recursive
+            git -C "$repo" submodule update --init --recursive
+            case "$name" in
+              genesis-plus-gx-pico)
+                test -s "$repo/upstream/core/system.c"
+                test -s "$repo/upstream/libretro/libretro.c"
+                ;;
+              armNES-pico)
+                test -s "$repo/upstream/src/nes.c"
+                test -s "$repo/zlib/crc32.c"
+                ;;
+            esac
+            bash -n "$repo/build.sh"
+            echo "OK: ${name} script, nested upstream sources, and Bash syntax verified."
+            echo "Selected commit: $(git -C "$repo" rev-parse HEAD)"
+            echo "::endgroup::"
+          }
+          verify_core genesis-plus-gx-pico https://github.com/TheGammaSqueeze/genesis-plus-gx-pico.git
+          verify_core armNES-pico https://github.com/TheGammaSqueeze/armNES-pico.git
+          git -C lk-mt6785 submodule status --recursive > submodule-versions.txt
+
       - name: Verify and apply Kids restrictions
         run: |
           python3 apply_kids_patch.py lk-mt6785 --check
@@ -320,3 +369,4 @@ jobs:
 # Missing Gambatte C++ allocator-error handler added to existing freestanding runtime.
 # SNES9x checkout repaired only if the original pinned/remote checkout lacks build.sh.
 # Firmware remains untested and must not be flashed without independent review.
+# Genesis Plus GX and armNES checkouts verified and repaired only when build.sh is missing.
