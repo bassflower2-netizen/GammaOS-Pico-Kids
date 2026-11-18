@@ -94,6 +94,41 @@ jobs:
             cat fallback-submodules.txt
           fi
 
+      # Some original LK submodule gitlinks no longer resolve. In that case,
+      # git submodule update --remote may leave the SNES checkout without its
+      # build script. Repair only the affected checkout with the official
+      # standalone SNES9x-Pico repository's main branch.
+      - name: Verify or repair SNES9x-Pico checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="lk-mt6785/cores/snes9x-pico"
+          upstream_url="https://github.com/TheGammaSqueeze/snes9x-pico.git"
+          echo "Checking SNES9x checkout at $repo"
+          if [[ -f "$repo/build.sh" ]]; then
+            echo "SNES9x build.sh exists; preserving current checkout."
+          else
+            echo "::warning title=SNES9x checkout incomplete::build.sh is missing; cloning official main branch into the SNES9x core directory."
+            rm -rf -- "$repo"
+            git clone --single-branch --branch main "$upstream_url" "$repo"
+            echo "SNES9x checkout reconstructed from $upstream_url (main)" >> fallback-submodules.txt
+          fi
+          test -f "$repo/build.sh" || {
+            echo "::error title=SNES9x checkout still invalid::The official checkout has no build.sh"
+            exit 1
+          }
+          chmod +x "$repo/build.sh"
+          git -C "$repo" submodule sync --recursive
+          git -C "$repo" submodule update --init --recursive
+          test -s "$repo/upstream/snes9x.h" || {
+            echo "::error title=SNES9x upstream missing::Cannot find upstream/snes9x.h after submodule checkout"
+            exit 1
+          }
+          bash -n "$repo/build.sh"
+          echo "SNES9x-Pico commit: $(git -C "$repo" rev-parse HEAD)"
+          git -C lk-mt6785 submodule status --recursive > submodule-versions.txt
+          echo "OK: SNES9x build script and nested upstream sources are available."
+
       - name: Verify and apply Kids restrictions
         run: |
           python3 apply_kids_patch.py lk-mt6785 --check
@@ -283,4 +318,5 @@ jobs:
 
 # Build uses Ubuntu 22.04 + ARM GCC 10.3, the toolchain tested by gambatte-pico.
 # Missing Gambatte C++ allocator-error handler added to existing freestanding runtime.
+# SNES9x checkout repaired only if the original pinned/remote checkout lacks build.sh.
 # Firmware remains untested and must not be flashed without independent review.
