@@ -42,11 +42,27 @@ jobs:
           set -euo pipefail
           python3 -c 'import cairosvg, fontTools, arabic_reshaper, numpy, PIL; print("OK: CairoSVG, fontTools, arabic_reshaper, NumPy, Pillow")'
 
-      - name: Fetch official GammaOS Pico source code
+      # IMPORTANT: Upstream updates change UI strings. This commit is the
+      # exact lk-mt6785 version used for the successfully built v0.1 Kids image
+      # (recorded in its gammaos-source-commit.txt), not floating HEAD.
+      - name: Fetch verified GammaOS Pico source revision (pin v0.1 base)
+        shell: bash
         run: |
+          set -euo pipefail
+          SOURCE_REVISION="23926b52ffab442e87404c0b0858b55d78a36c70"
           git clone --single-branch --branch lk-gba-emu-sd-card-kpa \
             https://github.com/TheGammaSqueeze/lk-mt6785.git lk-mt6785
-          git -C lk-mt6785 rev-parse HEAD | tee gammaos-source-commit.txt
+          if ! git -C lk-mt6785 cat-file -e "${SOURCE_REVISION}^{commit}" 2>/dev/null; then
+            git -C lk-mt6785 fetch origin "$SOURCE_REVISION"
+          fi
+          git -C lk-mt6785 checkout --detach "$SOURCE_REVISION"
+          ACTUAL_REVISION="$(git -C lk-mt6785 rev-parse HEAD)"
+          if [[ "$ACTUAL_REVISION" != "$SOURCE_REVISION" ]]; then
+            echo "::error title=Unexpected source revision::Expected $SOURCE_REVISION; got $ACTUAL_REVISION"
+            exit 1
+          fi
+          printf '%s\n' "$ACTUAL_REVISION" | tee gammaos-source-commit.txt
+          echo "Pinned to the previously successful v0.1 Kids firmware source."
 
       # Prefer every exact gitlink commit. Only when that commit is not fetchable,
       # use the remote's default branch HEAD for that particular module. Handles
