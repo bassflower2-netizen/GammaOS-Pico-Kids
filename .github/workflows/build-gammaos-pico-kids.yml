@@ -1,4 +1,4 @@
-name: GammaOS Pico Kids - build (experimental)
+name: GammaOS Pico Kids v0.2.1 - known-good cores (experimental)
 
 on:
   workflow_dispatch:
@@ -29,7 +29,7 @@ jobs:
           # its legacy x86 (32-bit) runtime is not installed by default.
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y git make unzip zip file python3 python3-pil python3-numpy \
+          sudo apt-get install -y git make unzip zip file python3 python3-pil python3-numpy curl \
             python3-cairosvg python3-fonttools \
             openssl python3-pip gcc-arm-none-eabi libnewlib-arm-none-eabi \
             libstdc++-arm-none-eabi-newlib zlib1g:amd64 libc6:i386 zlib1g:i386
@@ -195,6 +195,42 @@ jobs:
           verify_core armNES-pico https://github.com/TheGammaSqueeze/armNES-pico.git
           git -C lk-mt6785 submodule status --recursive > submodule-versions.txt
 
+      # v0.1 was device-tested by this project's owner and recorded the exact
+      # SNES9x and Genesis+GX Git commits in its submodule-versions.txt.
+      # Floating HEAD via submodule fallback could change between build dates.
+      # Pin both cores to those known versions, after the missing-checkout repairs.
+      - name: Pin SNES9x and Genesis Plus GX to v0.1 working revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > pinned-core-revisions.txt
+          pin_core() {
+            local name="$1" commit="$2" url="$3" repo="lk-mt6785/cores/$1"
+            echo "::group::Pin ${name} to tested v0.1 revision"
+            test -f "$repo/build.sh" || { echo "::error::Missing $repo/build.sh"; exit 1; }
+            if ! git -C "$repo" cat-file -e "${commit}^{commit}" 2>/dev/null; then
+              git -C "$repo" fetch --no-tags "$url" "$commit"
+            fi
+            git -C "$repo" -c advice.detachedHead=false checkout --detach --force "$commit"
+            local actual
+            actual="$(git -C "$repo" rev-parse HEAD)"
+            [[ "$actual" == "$commit" ]] || { echo "::error::Incorrect $name revision $actual"; exit 1; }
+            git -C "$repo" submodule sync --recursive
+            git -C "$repo" submodule update --init --recursive
+            chmod +x "$repo/build.sh"
+            bash -n "$repo/build.sh"
+            printf '%s | tested-v0.1=%s | selected=%s\n' "$name" "$commit" "$actual" | tee -a pinned-core-revisions.txt
+            echo "::endgroup::"
+          }
+          pin_core snes9x-pico 064f14f0316b6298ad64f9e1c139ac2e3db6878b \
+            https://github.com/TheGammaSqueeze/snes9x-pico.git
+          pin_core genesis-plus-gx-pico 4677960c7a52e69e710358c324e07a497e117b6e \
+            https://github.com/TheGammaSqueeze/genesis-plus-gx-pico.git
+          test -s lk-mt6785/cores/snes9x-pico/upstream/snes9x.h
+          test -s lk-mt6785/cores/genesis-plus-gx-pico/upstream/core/system.c
+          git -C lk-mt6785 submodule status --recursive > submodule-versions.txt
+          echo "OK: SNES and Genesis cores now use the same exact source revisions as the working v0.1 build."
+
       - name: Verify and apply Kids restrictions
         run: |
           python3 apply_kids_patch.py lk-mt6785 --check
@@ -355,6 +391,89 @@ jobs:
             }
           done
 
+      # The owner confirmed this exact combination works on real hardware:
+      # v0.2 firmware for one-tap exit + ORIGINAL v0.1 SNES and Genesis blobs.
+      # Pinning the source revisions alone is insufficient; small toolchain or
+      # path differences can change the blob. Restore the already device-tested
+      # binaries from this project's PUBLIC v0.1 GitHub release after all new
+      # sources and SD files are built, then verify their known SHA256 hashes.
+      - name: Restore device-tested SNES and Sega cores from v0.1 release
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/bassflower2-netizen/GammaOS-Pico-Kids/releases/download/V0.1.0-Kids/GammaOS-Pico-Kids-KPA.zip"
+          curl --fail --location --show-error --silent --retry 3 --retry-delay 3 \
+            --output "${RUNNER_TEMP}/gammaos-pico-kids-v0.1.zip" "$url"
+          python3 - <<'PYRESTORE'
+          import os, hashlib, zipfile, io
+          from pathlib import Path
+
+          ARCHIVE = Path(os.environ['RUNNER_TEMP']) / 'gammaos-pico-kids-v0.1.zip'
+          OUT = Path('lk-mt6785/out/sdcard/cores')
+          EXPECTED = {
+              'snes9x-pico.blob': 'b48d5039f236a8f405eda8b05faef4fed29ec3d0285d703635c71b048fd7fd4c',
+              'genesis-plus-gx-pico.blob': 'ae9faf2d9d7ebe25620102b44c5fa0578bb3cffbaa0064c62dd84fd24da9a96c',
+          }
+
+          def inspect(data: bytes, depth=0):
+              if depth > 3 or len(data) > 150 * 1024 * 1024:
+                  raise RuntimeError('Unexpected nested release archive depth or size')
+              found = {}
+              nested = []
+              with zipfile.ZipFile(io.BytesIO(data)) as z:
+                  for item in z.infolist():
+                      if item.is_dir():
+                          continue
+                      n = item.filename.replace('\\', '/').strip('/')
+                      if any(n == f'sdcard/cores/{core}' or n.endswith(f'/sdcard/cores/{core}') for core in EXPECTED):
+                          core = n.rsplit('/', 1)[-1]
+                          if core in found:
+                              raise RuntimeError('Duplicate core in release archive: ' + core)
+                          if item.file_size > 8 * 1024 * 1024:
+                              raise RuntimeError('Unexpectedly oversized core blob: ' + core)
+                          found[core] = z.read(item)
+                      elif n.lower().endswith('.zip'):
+                          if item.file_size > 150 * 1024 * 1024:
+                              raise RuntimeError('Unexpectedly oversized nested ZIP')
+                          nested.append(z.read(item))
+              if len(found) == len(EXPECTED):
+                  return found
+              for nested_zip in nested:
+                  try:
+                      inner = inspect(nested_zip, depth + 1)
+                      if set(inner) == set(EXPECTED):
+                          return inner
+                  except (zipfile.BadZipFile, RuntimeError):
+                      continue
+              raise RuntimeError('Could not locate BOTH original cores in the v0.1 release')
+
+          files = inspect(ARCHIVE.read_bytes())
+          # Validate BOTH before changing either file.
+          for core, expected in EXPECTED.items():
+              value = hashlib.sha256(files[core]).hexdigest()
+              if value != expected:
+                  raise SystemExit(f'WRONG original {core}: sha256={value}, expected={expected}')
+              print(f'VERIFIED original {core}: SHA256 {value}')
+          OUT.mkdir(parents=True, exist_ok=True)
+          report = ['Original GammaOS Pico Kids v0.1 tested blobs restored into v0.2.1:']
+          for core in EXPECTED:
+              target = OUT / core
+              if not target.is_file():
+                  raise SystemExit(f'Missing newly-built target core: {target}')
+              target.write_bytes(files[core])
+              report.append(f'{core}  bytes={len(files[core])}  SHA256={EXPECTED[core]}')
+          Path('v0.1-proven-cores.txt').write_text('\n'.join(report) + '\n')
+          print('\n'.join(report))
+          PYRESTORE
+
+      - name: Verify SNES and Sega core binaries match tested v0.1 EXACTLY
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'b48d5039f236a8f405eda8b05faef4fed29ec3d0285d703635c71b048fd7fd4c  lk-mt6785/out/sdcard/cores/snes9x-pico.blob' | sha256sum --check --status || { echo 'SNES9x binary mismatch'; exit 1; }
+          echo 'ae9faf2d9d7ebe25620102b44c5fa0578bb3cffbaa0064c62dd84fd24da9a96c  lk-mt6785/out/sdcard/cores/genesis-plus-gx-pico.blob' | sha256sum --check --status || { echo 'Genesis/Sega binary mismatch'; exit 1; }
+          echo 'PASS: both cores are byte-for-byte identical to the versions that worked on the device with v0.2.'
+
       - name: Package experimental build (do not flash without review)
         run: |
           set -euo pipefail
@@ -362,17 +481,17 @@ jobs:
           cp lk-mt6785/out/lk_a_kpa_signed.img kids-output/
           cp -a lk-mt6785/out/sdcard kids-output/
           cp README_DE.md kids-output/
-          cp gammaos-source-commit.txt submodule-versions.txt fallback-submodules.txt kids-output/
+          cp gammaos-source-commit.txt submodule-versions.txt fallback-submodules.txt pinned-core-revisions.txt v0.1-proven-cores.txt kids-output/
           arm-none-eabi-g++ --version | head -n 1 > kids-output/toolchain-version.txt
-          echo "EXPERIMENTAL: NOT DEVICE-TESTED. Validate image and recovery procedure before flashing." > kids-output/UNTESTED_READ_FIRST.txt
+          echo "EXPERIMENTAL v0.2.1: v0.2 one-tap bootloader plus byte-identical, device-tested v0.1 SNES/Genesis core files. Verify YOUR device and backup before flashing. Do NOT publish before device-testing full package." > kids-output/UNTESTED_READ_FIRST.txt
           cd kids-output
-          zip -qr ../GammaOS-Pico-Kids-KPA-v0.2.0-TESTBUILD.zip .
+          zip -qr ../GammaOS-Pico-Kids-KPA-v0.2.1-TESTBUILD.zip .
 
       - name: Upload build artifact (NOT device-tested)
         uses: actions/upload-artifact@v6
         with:
-          name: GammaOS-Pico-Kids-KPA-v0.2.0-TESTBUILD
-          path: GammaOS-Pico-Kids-KPA-v0.2.0-TESTBUILD.zip
+          name: GammaOS-Pico-Kids-KPA-v0.2.1-TESTBUILD
+          path: GammaOS-Pico-Kids-KPA-v0.2.1-TESTBUILD.zip
           if-no-files-found: error
 
 
@@ -387,10 +506,13 @@ jobs:
             gammaos-source-commit.txt
             fallback-submodules.txt
             submodule-versions.txt
+            pinned-core-revisions.txt
+            v0.1-proven-cores.txt
           if-no-files-found: ignore
 
 # Build uses Ubuntu 22.04 + ARM GCC 10.3, the toolchain tested by gambatte-pico.
 # Missing Gambatte C++ allocator-error handler added to existing freestanding runtime.
 # SNES9x checkout repaired only if the original pinned/remote checkout lacks build.sh.
-# Firmware remains untested and must not be flashed without independent review.
+# Whole v0.2.1 package remains a TESTBUILD: do not release before device verification.
 # Genesis Plus GX and armNES checkouts verified and repaired only when build.sh is missing.
+# Final SNES/Genesis core binaries restored from published v0.1 asset; hashes mandatory.
