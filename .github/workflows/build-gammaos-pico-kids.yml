@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/build-gammaos-pico-kids.yml'
       - 'apply_kids_patch.py'
+      - 'apply_kids_game_exit_patch.py'
 
 permissions:
   contents: read
@@ -183,6 +184,13 @@ jobs:
           python3 apply_kids_patch.py lk-mt6785 --check
           python3 apply_kids_patch.py lk-mt6785
 
+      - name: Verify and apply Kids one-tap game exit (v0.2 test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 apply_kids_game_exit_patch.py lk-mt6785 --check
+          python3 apply_kids_game_exit_patch.py lk-mt6785
+
       - name: Check prebuilt logo compressor dependencies
         shell: bash
         run: |
@@ -342,13 +350,13 @@ jobs:
           arm-none-eabi-g++ --version | head -n 1 > kids-output/toolchain-version.txt
           echo "EXPERIMENTAL: NOT DEVICE-TESTED. Validate image and recovery procedure before flashing." > kids-output/UNTESTED_READ_FIRST.txt
           cd kids-output
-          zip -qr ../GammaOS-Pico-Kids-KPA-UNTESTED.zip .
+          zip -qr ../GammaOS-Pico-Kids-KPA-v0.2.0-TESTBUILD.zip .
 
       - name: Upload build artifact (NOT device-tested)
         uses: actions/upload-artifact@v6
         with:
-          name: GammaOS-Pico-Kids-KPA-UNTESTED
-          path: GammaOS-Pico-Kids-KPA-UNTESTED.zip
+          name: GammaOS-Pico-Kids-KPA-v0.2.0-TESTBUILD
+          path: GammaOS-Pico-Kids-KPA-v0.2.0-TESTBUILD.zip
           if-no-files-found: error
 
 
